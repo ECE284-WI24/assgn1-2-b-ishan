@@ -19,6 +19,7 @@ void twoBitCompress(char* seq, size_t seqLen, uint32_t* compressedSeq) {
     size_t compressedSeqLen = (seqLen+15)/16;
    
     size_t start_index = 0; 
+    // Adding a function using the TBB library for enabling parallelization
     tbb::parallel_for (start_index, compressedSeqLen, [ = ] (size_t i) {
         compressedSeq[i] = 0;
 
