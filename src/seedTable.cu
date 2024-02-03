@@ -111,8 +111,8 @@ __global__ void kmerPosConcat(
     int bx = blockIdx.x;
 
     // HINT: Values below could be useful for parallelizing the code
-    //int bs = blockDim.x;
-    //int gs = gridDim.x;
+    int bs = blockDim.x;
+    int gs = gridDim.x;
 
     uint32_t N = d_seqLen;
     uint32_t k = kmerSize;
@@ -122,25 +122,42 @@ __global__ void kmerPosConcat(
     uint32_t mask = (1 << 2*k)-1;
     size_t kmer = 0;
 
+    // Calculate number of iterations for each thread
+    // For eg: if there are 12000 ops, and 3 blocks with 4 threads each
+    // so there will be 1000 iterations per thread
+    // 0-999; 1000-1999; 2000-2999, ..., 11000-11999
+    // gs * bs = total num of threads
+    uint32_t iterPerThread = (N - k) / (bs * gs);
+    if ((N - k) % (bs * gs) != 0) {
+        iterPerThread++;
+    }
+
+    // startIndex and endIndex are inclusive values
+    uint32_t startIndex = (bs * bx + tx) * iterPerThread;
+    uint32_t endIndex   = startIndex + iterPerThread - 1; 
+
+    if (endIndex > (N - k)) {
+        endIndex = N - k;
+    }
+
     // HINT: the if statement below ensures only the first thread of the first
     // block does all the computation. This statement might have to be removed
     // during parallelization
-    if ((bx == 0) && (tx == 0)) {
-        for (uint32_t i = 0; i <= N-k; i++) {
-            uint32_t index = i/16;
-            uint32_t shift1 = 2*(i%16);
-            if (shift1 > 0) {
-                uint32_t shift2 = 32-shift1;
-                kmer = ((d_compressedSeq[index] >> shift1) | (d_compressedSeq[index+1] << shift2)) & mask;
-            } else {
-                kmer = d_compressedSeq[index] & mask;
-            }
+    for (uint32_t i = startIndex; i <= endIndex; i++) {
 
-            // Concatenate kmer value (first 32-bits) with its position (last
-            // 32-bits)
-            size_t kPosConcat = (kmer << 32) + i;
-            d_kmerPos[i] = kPosConcat;
+        uint32_t index = i / 16;
+        uint32_t shift1 = 2 * (i % 16);
+        if (shift1 > 0) {
+            uint32_t shift2 = 32-shift1;
+            kmer = ((d_compressedSeq[index] >> shift1) | (d_compressedSeq[index+1] << shift2)) & mask;
+        } else {
+            kmer = d_compressedSeq[index] & mask;
         }
+
+        // Concatenate kmer value (first 32-bits) with its position (last
+        // 32-bits)
+        size_t kPosConcat = (kmer << 32) + i;
+        d_kmerPos[i] = kPosConcat;
     }
 }
 
@@ -161,9 +178,12 @@ __global__ void kmerOffsetFill(
 
     int tx = threadIdx.x;
     int bx = blockIdx.x;
+
     // HINT: Values below could be useful for parallelizing the code
-    //int bs = blockDim.x;
-    //int gs = gridDim.x;
+    // bs = number of threads in each block
+    int bs = blockDim.x;
+    // gs = number of blocks in the grid
+    int gs = gridDim.x;
 
     uint32_t N = d_seqLen;
     uint32_t k = kmerSize;
@@ -172,24 +192,44 @@ __global__ void kmerOffsetFill(
     uint32_t kmer = 0;
     uint32_t lastKmer = 0;
 
+    // Calculate number of iterations for each thread
+    // For eg: if there are 12000 ops, and 3 blocks with 4 threads each
+    // so there will be 1000 iterations per thread
+    // 0-999; 1000-1999; 2000-2999, ..., 11000-11999
+    // gs * bs = total num of threads
+    uint32_t iterPerThread = (N - k) / (bs * gs);
+    if ((N - k) % (bs * gs) != 0) {
+        iterPerThread++;
+    }
+
+    // startIndex and endIndex are inclusive values
+    uint32_t startIndex = (bs * bx + tx) * iterPerThread;
+    uint32_t endIndex   = startIndex + iterPerThread - 1; 
+
+    if (endIndex > (N - k)) {
+        endIndex = N - k;
+    }
+
     // HINT: the if statement below ensures only the first thread of the first
     // block does all the computation. This statement might have to be removed
     // during parallelization
-    if ((bx == 0) && (tx == 0)) {
-        for (uint32_t i = 0; i <= N-k; i++) {
-            kmer = (d_kmerPos[i] >> 32) & mask;
-            if (kmer != lastKmer) {
-                for (auto j=lastKmer; j<kmer; j++) {
-                    d_kmerOffset[j] = i;
-                }
+    // iterator will go from startIndex to endIndex inclusively
+    // If there are leftover iterations wrt nuum of elements, then terminate at N-k
+    for (uint32_t i = startIndex; i <= endIndex; i++) {
+        kmer = (d_kmerPos[i] >> 32) & mask;
+        if (kmer != lastKmer) {
+            for (auto j=lastKmer; j<kmer; j++) {
+                d_kmerOffset[j] = i;
             }
-            lastKmer = kmer;
         }
+        lastKmer = kmer;
+    }
 
-        // For all kmers lexicographically larger than the lexicographically
-        // largest kmer in the sequence, set offset to N-k
-        // HINT: This loop can also be parallelized (e.g. using thread block
-        // that encounters position N-k)
+    // For all kmers lexicographically larger than the lexicographically
+    // largest kmer in the sequence, set offset to N-k
+    // HINT: This loop can also be parallelized (e.g. using thread block
+    // that encounters position N-k)
+    if (endIndex >= (N - k)) {
         for (auto j=lastKmer; j<numKmers; j++) {
             d_kmerOffset[j] = N-k;
         }
@@ -210,17 +250,34 @@ __global__ void kmerPosMask(
     int bx = blockIdx.x;
 
     // HINT: Values below could be useful for parallelizing the code
-    //int bs = blockDim.x;
-    //int gs = gridDim.x;
+    int bs = blockDim.x;
+    int gs = gridDim.x;
 
     uint32_t N = d_seqLen;
     uint32_t k = kmerSize;
 
     size_t mask = ((size_t) 1 << 32)-1;
-    if ((bx == 0) && (tx == 0)) {
-        for (uint32_t i = 0; i <= N-k; i++) {
-            d_kmerPos[i] = d_kmerPos[i] & mask;
-        }
+
+    // Calculate number of iterations for each thread
+    // For eg: if there are 12000 ops, and 3 blocks with 4 threads each
+    // so there will be 1000 iterations per thread
+    // 0-999; 1000-1999; 2000-2999, ..., 11000-11999
+    // gs * bs = total num of threads
+    uint32_t iterPerThread = (N - k) / (bs * gs);
+    if ((N - k) % (bs * gs) != 0) {
+        iterPerThread++;
+    }
+
+    // startIndex and endIndex are inclusive values
+    uint32_t startIndex = (bs * bx + tx) * iterPerThread;
+    uint32_t endIndex   = startIndex + iterPerThread - 1; 
+
+    if (endIndex > (N - k)) {
+        endIndex = N - k;
+    }
+
+    for (uint32_t i = startIndex; i <= endIndex; i++) {
+        d_kmerPos[i] = d_kmerPos[i] & mask;
     }
 }
 
@@ -238,8 +295,8 @@ void GpuSeedTable::seedTableOnGpu (
     size_t* kmerPos) {
 
     // ASSIGNMENT 2 TASK: make sure to appropriately set the values below
-    int numBlocks = 1; // i.e. number of thread blocks on the GPU
-    int blockSize = 1; // i.e. number of GPU threads per thread block
+    int numBlocks = 64; // i.e. number of thread blocks on the GPU
+    int blockSize = 32; // i.e. number of GPU threads per thread block
 
     kmerPosConcat<<<numBlocks, blockSize>>>(compressedSeq, seqLen, kmerSize, kmerPos);
 
