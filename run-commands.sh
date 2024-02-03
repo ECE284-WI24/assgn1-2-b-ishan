@@ -19,4 +19,4 @@ export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${PWD}/tbb_cmake_build/tbb_cmake_build
 ## Run command using nsys nvprof profiler
 ## HINT: Useful for profiling tasks in Assignment 2 
 #nsys nvprof --print-gpu-trace ./seedTable -r ../data/reference.fa -T 8 -k 4 
-nvprof ./seedTable -r ../data/reference.fa -T 8 -k 4
+nvprof ./seedTable -r ../data/reference.fa -T 8 -k 12
